@@ -95,6 +95,21 @@ edit the ini: `AntiAliasing=on` + `AA_Sharpness=0.3` — mild sharpness cost, no
 - Real hardware: untested. The lib_nx.ini works, but full-res effect buffers +
   1080p scene will likely be too heavy for a stock Switch.
 
+## Known issue on stock emulators
+
+At high internal-resolution multipliers, water / wet areas can show a faint dark
+rectangle grid and a vertical seam with the 1080p patch active. Cause: the game
+keeps some water/env buffers at a fixed 1280x720 regardless of the patched scene
+resolution; once the scene is 1080p, the emulator rescales both at a mismatched
+ratio and the game's `texelFetch` composite breaks. This is game-side fixed-size
+buffer behaviour interacting with emulator rescaling — 1x is unaffected.
+
+Eden with [this texture-cache change](https://github.com/lambadalambda/xc2-sharpness-patches/issues)
+(XC2 sub-scene-resolution rescale exclusion, scene height inferred from the depth
+buffer) renders these areas cleanly; the change is being carried on an Eden branch
+and is not yet in any release. On other emulators, the artifact is subtle and
+limited to water-heavy scenes.
+
 ## Notes & findings
 
 - **A 2160p scene variant does not work**: `MOVZ #3840/#2160` at the same addresses

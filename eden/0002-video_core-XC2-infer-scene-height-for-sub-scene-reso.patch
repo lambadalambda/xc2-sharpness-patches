@@ -1,0 +1,91 @@
+From b0c4a70f40bb978a869dc2e82c0279330033f142 Mon Sep 17 00:00:00 2001
+From: Lain Soykaf <lain@lain.com>
+Date: Mon, 6 Jul 2026 09:10:52 +0400
+Subject: [PATCH] [video_core] XC2: infer scene height for sub-scene-resolution
+ rescale exclusion
+
+The fixed <720p threshold missed a case: with an exefs patch raising XC2's
+scene resolution to 1080p, the game's fixed-size 720p water/env buffers sit
+below scene resolution but above the threshold. Both then rescale and the
+game's texelFetch composite reconstructs coordinates at the wrong ratio,
+producing a dark grid and center seam on water surfaces.
+
+Track the largest widescreen depth-buffer height (the 3D pass always has
+one; the 1080p output framebuffer has none and shadow maps are square) as
+the effective scene height, and exclude color targets below it from
+rescaling. Vanilla (720p scene) behaves exactly as before; with a 1080p
+scene patch the 720p effect buffers now stay native and sample correctly.
+
+Verified at 3x at Coolley Lake (water grid/seam gone) with no regression at
+the original meadow repro.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/video_core/texture_cache/texture_cache.h  | 36 ++++++++++++-------
+ .../texture_cache/texture_cache_base.h        |  3 ++
+ 2 files changed, 27 insertions(+), 12 deletions(-)
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index b40fcf7ae6..1abbccff0d 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1257,18 +1257,30 @@ bool TextureCache<P>::ImageCanRescale(ImageBase& image) {
+     if (!image.info.rescaleable) {
+         return false;
+     }
+-    // Xenoblade Chronicles 2 composites half-resolution post-process buffers (640x360 / 320x360)
+-    // into the full-res scene via texelFetch at integer coordinates derived from gl_FragCoord.
+-    // Rescaling those sub-full-res color targets breaks that integer sampling and produces a
+-    // dark grid/seam artifact across the 3D scene at higher internal resolutions. Keep them at
+-    // native resolution so the game's own combine pass samples them correctly; the main scene
+-    // (720p targets) still rescales normally, so there is no visible sharpness loss.
+-    if (Settings::GetCurrentProgramID() == 0x0100E95004038000ULL &&
+-        GetFormatType(image.info.format) == SurfaceType::ColorTexture &&
+-        image.info.size.height < XC2_RESCALE_MIN_HEIGHT &&
+-        False(image.flags & (ImageFlagBits::Rescaled | ImageFlagBits::CheckingRescalable |
+-                             ImageFlagBits::IsRescalable))) {
+-        return false;
++    // Xenoblade Chronicles 2 composites sub-scene-resolution post-process buffers (half-res
++    // effect buffers, fixed 720p water/env buffers when a resolution patch raises the scene to
++    // 1080p) into the scene via texelFetch at integer coordinates derived from gl_FragCoord.
++    // Rescaling those sub-scene-res color targets breaks that integer sampling and produces a
++    // dark grid/seam artifact at higher internal resolutions. Keep them at native resolution so
++    // the game's own combine pass samples them correctly; the scene targets themselves still
++    // rescale normally, so there is no visible sharpness loss.
++    //
++    // The scene height is inferred from the largest widescreen depth buffer (the 3D pass always
++    // has one; the 1080p output framebuffer has none and shadow maps are square), so this also
++    // works when an exefs patch changes the scene resolution (e.g. 720p -> 1080p).
++    if (Settings::GetCurrentProgramID() == 0x0100E95004038000ULL) {
++        const SurfaceType surface_type = GetFormatType(image.info.format);
++        if (surface_type == SurfaceType::Depth &&
++            image.info.size.width > image.info.size.height &&
++            image.info.size.height <= 1080 && image.info.size.height > xc2_scene_height) {
++            xc2_scene_height = image.info.size.height;
++        }
++        if (surface_type == SurfaceType::ColorTexture &&
++            image.info.size.height < std::max(XC2_RESCALE_MIN_HEIGHT, xc2_scene_height) &&
++            False(image.flags & (ImageFlagBits::Rescaled | ImageFlagBits::CheckingRescalable |
++                                 ImageFlagBits::IsRescalable))) {
++            return false;
++        }
+     }
+     if (Settings::values.resolution_info.downscale && !image.info.downscaleable) {
+         return false;
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index fbc2bb4cf7..5bc04998f5 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -450,6 +450,9 @@ private:
+ 
+     bool has_deleted_images = false;
+     bool is_rescaling = false;
++    // Largest widescreen depth-buffer height seen; used by the XC2 sub-scene-resolution
++    // rescale exclusion to infer the game's scene resolution (see ImageCanRescale).
++    u32 xc2_scene_height = 0;
+     u64 total_used_memory = 0;
+     u64 minimum_memory;
+     u64 expected_memory;
+-- 
+2.55.0
+

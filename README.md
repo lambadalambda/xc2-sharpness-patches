@@ -104,11 +104,10 @@ resolution; once the scene is 1080p, the emulator rescales both at a mismatched
 ratio and the game's `texelFetch` composite breaks. This is game-side fixed-size
 buffer behaviour interacting with emulator rescaling — 1x is unaffected.
 
-Eden with [this texture-cache change](https://github.com/lambadalambda/xc2-sharpness-patches/issues)
-(XC2 sub-scene-resolution rescale exclusion, scene height inferred from the depth
-buffer) renders these areas cleanly; the change is being carried on an Eden branch
-and is not yet in any release. On other emulators, the artifact is subtle and
-limited to water-heavy scenes.
+Eden built with the two texture-cache patches in [`eden/`](eden/) (XC2
+sub-scene-resolution rescale exclusion, scene height inferred from the depth
+buffer) renders these areas cleanly; the change is not yet in any Eden release.
+On other emulators, the artifact is subtle and limited to water-heavy scenes.
 
 ## Notes & findings
 

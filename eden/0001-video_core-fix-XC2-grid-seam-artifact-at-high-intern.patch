@@ -1,0 +1,69 @@
+From cb8afb864879b25eff4a095d63c9adbad89a2163 Mon Sep 17 00:00:00 2001
+From: Lain Soykaf <lain@lain.com>
+Date: Sun, 5 Jul 2026 11:19:35 +0400
+Subject: [PATCH] [video_core] fix XC2 grid/seam artifact at high internal
+ resolution
+
+Xenoblade Chronicles 2 renders its main scene into 720p color targets but
+runs post-process passes (fog, AO, transparency reduction, bloom) into
+half-resolution color buffers (640x360 / 320x360), then composites them into
+the full-res scene via texelFetch at integer coordinates derived from
+gl_FragCoord.
+
+Rescaling those sub-full-resolution color targets sets their IsTextureScaled
+bit, but the shader recompiler's integer fetch-coordinate scaling assumes a
+sampled buffer shares the main render target's resolution. For a half-res
+buffer that is wrong, so the reconstructed fetch coordinates drift
+periodically across the frame, producing a dark grid of seams (plus a vertical
+center seam from the SubScale floor() term). The artifact scales with internal
+resolution and is absent at native 1x.
+
+Exclude sub-720p color render targets from rescaling for XC2 (by title id) in
+ImageCanRescale, so the game samples them at native resolution as intended. The
+720p main scene still rescales, so there is no visible sharpness loss. Scoped
+to the title id to avoid affecting any other game.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/video_core/texture_cache/texture_cache.h | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 2cfdb94359..b40fcf7ae6 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -35,6 +35,11 @@ using VideoCore::Surface::PixelFormat;
+ using VideoCore::Surface::SurfaceType;
+ using namespace Common::Literals;
+ 
++// Xenoblade Chronicles 2 renders its main scene into 720p color targets and its post-process
++// effects into half-resolution (360-tall) buffers. Color targets shorter than this are treated
++// as those half-res effect buffers and excluded from rescaling (see ImageCanRescale).
++constexpr u32 XC2_RESCALE_MIN_HEIGHT = 720;
++
+ template <class P>
+ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
+     : runtime{runtime_}, device_memory{device_memory_} {
+@@ -1252,6 +1257,19 @@ bool TextureCache<P>::ImageCanRescale(ImageBase& image) {
+     if (!image.info.rescaleable) {
+         return false;
+     }
++    // Xenoblade Chronicles 2 composites half-resolution post-process buffers (640x360 / 320x360)
++    // into the full-res scene via texelFetch at integer coordinates derived from gl_FragCoord.
++    // Rescaling those sub-full-res color targets breaks that integer sampling and produces a
++    // dark grid/seam artifact across the 3D scene at higher internal resolutions. Keep them at
++    // native resolution so the game's own combine pass samples them correctly; the main scene
++    // (720p targets) still rescales normally, so there is no visible sharpness loss.
++    if (Settings::GetCurrentProgramID() == 0x0100E95004038000ULL &&
++        GetFormatType(image.info.format) == SurfaceType::ColorTexture &&
++        image.info.size.height < XC2_RESCALE_MIN_HEIGHT &&
++        False(image.flags & (ImageFlagBits::Rescaled | ImageFlagBits::CheckingRescalable |
++                             ImageFlagBits::IsRescalable))) {
++        return false;
++    }
+     if (Settings::values.resolution_info.downscale && !image.info.downscaleable) {
+         return false;
+     }
+-- 
+2.55.0
+
